@@ -1,0 +1,50 @@
+{
+  "name": "figma-export",
+  "version": "1.0.0",
+  "description": "Figma PDF Export Command-Line Interface",
+  "license": "MIT",
+  "keywords": [
+    "Figma"
+  ],
+  "main": "./dist/index.js",
+  "author": {
+    "name": "Shaun Becker",
+    "email": "smbecker@gmail.com"
+  },
+  "files": [
+    "dist/",
+    "bin/"
+  ],
+  "engineStrict": true,
+  "engines": {
+    "node": ">=8.3.0"
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc -p ./src",
+    "prepare": "npm run build",
+    "lint": "tslint --config tslint.json 'src/**/*.ts' --exclude '**/node_modules/**'",
+    "rebuild": "npm run clean && npm run build",
+    "start": "node bin/figma-export.js",
+    "prepublishOnly": "npm run rebuild"
+  },
+  "bin": {
+    "figma-export": "bin/figma-export.js"
+  },
+  "dependencies": {
+    "liftoff": "^2.3.0",
+    "request": "^2.81.0",
+    "v8flags": "^2.1.1",
+    "yargs": "^7.1.0",
+    "pdfkit": "^0.8.3",
+    "svg-to-pdfkit": "^0.1.7"
+  },
+  "devDependencies": {
+    "@types/node": "^8.0.20",
+    "rimraf": "^2.6.1",
+    "ts-node": "^3.3.0",
+    "tslint-microsoft-contrib": "^5.0.1",
+    "typescript": "^2.8.3",
+    "tslint": "^5.8.0"
+  }
+}
