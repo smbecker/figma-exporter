@@ -1,15 +1,40 @@
 // borrows heavily from https://github.com/gweltaz-calori/Figma-To-Pdf/blob/master/utils/index.js
 
-import * as fs from 'fs';
-import * as path from 'path';
-import * as process from 'process';
+import { Document, ExternalDocument } from 'pdfjs';
+import { cwd } from 'process';
+import { join } from 'path';
+import { createWriteStream, writeFile } from 'fs';
 import * as request from 'request';
-const PDFDocument = require('pdfkit');
-const SVGtoPDF = require('svg-to-pdfkit');
 
-const sortFrames = pages => {
+type FileDetails = {
+	key: string;
+	name: string;
+	pages?: PageDetails[];
+};
+
+type PageDetails = {
+	id: string;
+	name: string;
+	layers?: LayerDetails[];
+};
+
+type LayerDetails = {
+	id: string;
+	name?: string;
+	imageUrl?: string;
+	[name: string]: any;
+};
+
+type ExportOptions = {
+	directory?: string;
+	format?: string;
+	scale?: number;
+	firstPageOnly?: boolean;
+};
+
+const sortFrames = layers => {
 	let lines = [];
-	const sortedByHeight = pages.sort((a, b) => a.absoluteBoundingBox.y - b.absoluteBoundingBox.y);
+	const sortedByHeight = layers.sort((a, b) => a.absoluteBoundingBox.y - b.absoluteBoundingBox.y);
 
 	// tslint:disable-next-line:forin
 	for (let page in sortedByHeight) {
@@ -36,18 +61,6 @@ const sortFrames = pages => {
 	}
 
 	return sortedByHeight;
-};
-
-type FileDetails = {
-	key: string;
-	name: string;
-	pages?: any[];
-};
-
-type ExportOptions = {
-	directory?: string;
-	format?: string;
-	scale?: number;
 };
 
 const get = (url: string, token: string): Promise<any> => {
@@ -80,7 +93,15 @@ const getProjectDetails = async (key: string, token: string): Promise<FileDetail
 
 const getFileDetails = async (key: string, token: string): Promise<FileDetails> => {
 	const body = await get(`https://api.figma.com/v1/files/${key}`, token);
-	const pages = sortFrames(body.document.children[0].children.filter(layer => layer.type === 'FRAME'));
+	const pages = body.document.children.filter(layer => layer.type === 'CANVAS')
+		.map(page => ({
+			id: page.id,
+			name: page.name,
+			layers: sortFrames(page.children.filter(layer => layer.type === 'FRAME')).map(frame => ({
+				id: frame.id,
+				name: frame.name
+			}))
+		}));
 	return {
 		key,
 		name: body.name,
@@ -88,124 +109,133 @@ const getFileDetails = async (key: string, token: string): Promise<FileDetails> 
 	};
 };
 
-const exportPages = async (file: FileDetails, format: string, scale: number, token: string): Promise<void> => {
-	const ids = file.pages.map(page => page.id).join(',');
-	const body = await get(`https://api.figma.com/v1/images/${file.key}?ids=${ids}&format=${format}${(scale && scale > 0 ? `&scale=${scale}` : '')}`, token);
+const getLayerImageUrls = async (file: FileDetails, page: PageDetails, format: string, scale: number, token: string): Promise<void> => {
+	const ids = page.layers.map(layer => layer.id).join(',');
+	if (ids.length === 0) {
+		return;
+	}
 
-	for (let page of file.pages) {
-		page.imageUrl = body.images[page.id];
+	const body = await get(`https://api.figma.com/v1/images/${file.key}?ids=${ids}&format=${format}${(scale && scale > 0 ? `&scale=${scale}` : '')}`, token);
+	for (let layer of page.layers) {
+		layer.imageUrl = body.images[layer.id];
 	}
 };
 
-const getExportSvgContent = async (page: any, token: string): Promise<void> => {
-	page.svgContent = await get(page.imageUrl, token);
+const getPageImageUrls = async (file: FileDetails, firstPageOnly: boolean, format: string, scale: number, token: string): Promise<void> => {
+	if (firstPageOnly) {
+		await getLayerImageUrls(file, file.pages[0], format, scale, token);
+	} else {
+		const pagePromises = file.pages.map(page => getLayerImageUrls(file, page, format, scale, token));
+		await Promise.all(pagePromises);
+	}
 };
 
-const getExportSvgContents = async (file: FileDetails, token: string): Promise<void> => {
-	const imagesPromises = file.pages.map(page => getExportSvgContent(page, token));
-	await Promise.all(imagesPromises);
-};
-
-const createPdf = (file: FileDetails, res: any) => {
-	const options = {
-		assumePt: true
-	};
-
-	const pages = file.pages.slice(0);
-
-	const doc = new PDFDocument({
-		compress: false,
-		size: [pages[0].absoluteBoundingBox.width, pages[0].absoluteBoundingBox.height]
-	});
-
-	doc.pipe(res);
-
-	pages.forEach((page, index) => {
-		if (index !== 0) {
-			doc.addPage({ size: [page.absoluteBoundingBox.width, page.absoluteBoundingBox.height] });
-		}
-		SVGtoPDF(doc, page.svgContent, 0, 0, options);
-	});
-
-	doc.end();
-};
-
-const exportPdf = async (file: FileDetails, outputDirectory: string, scale: number, token: string): Promise<string[]> => {
-	await exportPages(file, 'svg', scale, token);
-	await getExportSvgContents(file, token);
-
-	const output = path.join(outputDirectory, `${file.name}.pdf`);
-	const stream = fs.createWriteStream(output);
-	createPdf(file, stream);
-
-	return [output];
-};
-
-const exportPngPage = async (directory: string, name: string, pageNumber: number, imageUrl: string, token: string): Promise<string> => {
-	return new Promise<string>(resolve => {
-		const page = path.join(directory, `${name}-${pageNumber}.png`);
+const exportLayerOutput = (imageUrl: string, token: string, callback: (body: Buffer, cb: (err?) => void) => void): Promise<void> => {
+	return new Promise<void>((resolve, reject) => {
 		request({
 			uri: imageUrl,
 			method: 'GET',
 			headers: {
-				'Accept': 'image/png',
 				'X-Figma-Token': token
-			}
-		})
-		.pipe(fs.createWriteStream(page))
-		.on('close', () => resolve(page));
-	});
-};
-
-const exportPng = async (file: FileDetails, output: string, scale: number, token: string): Promise<string[]> => {
-	await exportPages(file, 'png', scale, token);
-
-	const directory = path.dirname(output);
-	const baseName = path.basename(output, '.png');
-
-	const pagePromises = file.pages.map((page, index) => exportPngPage(directory, baseName, index + 1, page.imageUrl, token));
-	return await Promise.all(pagePromises);
-};
-
-const exportSvgPage = async (directory: string, name: string, pageNumber: number, content: string): Promise<string> => {
-	return new Promise<string>((resolve, reject) => {
-		const page = path.join(directory, `${name}-${pageNumber}.svg`);
-		fs.writeFile(page, content, err => {
+			},
+			encoding: null
+		}, (err, _, body) => {
 			if (err) {
 				reject(err);
 			} else {
-				resolve(page);
+				callback(body, e => {
+					if (e) {
+						reject(e);
+					} else {
+						resolve();
+					}
+				});
 			}
 		});
 	});
 };
 
-const exportSvg = async (file: FileDetails, outputDirectory: string, scale: number, token: string): Promise<string[]> => {
-	await exportPages(file, 'svg', scale, token);
-	await getExportSvgContents(file, token);
-
-	const pagePromises = file.pages.map((page, index) => exportSvgPage(outputDirectory, file.name, index + 1, page.svgContent));
-	return await Promise.all(pagePromises);
+const exportLayer = async (output: string, imageUrl: string, token: string): Promise<string> => {
+	await exportLayerOutput(imageUrl, token, (body, callback) => writeFile(output, body, callback));
+	return output;
 };
 
-const exportFormats = {
-	'pdf': exportPdf,
-	'png': exportPng,
-	'svg': exportSvg
+const exportPage = async (file: FileDetails, page: PageDetails, exportOptions: ExportOptions, imageFormat: string, token: string): Promise<string[]> => {
+	const layerPromises = page.layers
+		.filter(layer => layer.imageUrl && layer.imageUrl.length > 0)
+		.map((layer, index) => {
+			const name = index > 0
+				? `${file.name}-${page.name}-${index + 1}.${imageFormat}`
+				: `${file.name}-${page.name}.${imageFormat}`;
+			const output = join(exportOptions.directory, name);
+			return exportLayer(output, layer.imageUrl, token);
+		});
+	return await Promise.all(layerPromises);
 };
+
+const exportPages = async (file: FileDetails, exportOptions: ExportOptions, imageFormat: string, token: string): Promise<string[]> => {
+	await getPageImageUrls(file, exportOptions.firstPageOnly, imageFormat, exportOptions.scale, token);
+	
+	const pagePromises = file.pages.map(page => exportPage(file, page, exportOptions, imageFormat, token));
+	const result = await Promise.all(pagePromises);
+	return result.reduce((a, b) => a.concat(b), []);
+};
+
+const exportPdfPage = async (file: FileDetails, page: PageDetails, exportOptions: ExportOptions, imageFormat: string, token: string): Promise<string[]> => {
+	const document = new Document();
+
+	const layers = page.layers.filter(x => x.imageUrl && x.imageUrl.length > 0);
+	if (layers.length === 0) {
+		return [];
+	}
+
+	for (let i = 0, count = layers.length; i < count; i++) {
+		const layer = layers[i];
+
+		await exportLayerOutput(layer.imageUrl, token, (body, callback) => {
+			const external = new ExternalDocument(body);
+			document.setTemplate(external);
+			document.addPagesOf(external);
+			callback();
+		});
+	}
+
+	const name = exportOptions.firstPageOnly
+		? `${file.name}.${imageFormat}`
+		: `${file.name}-${page.name}.${imageFormat}`;
+	const output = join(exportOptions.directory, name);
+	document.pipe(createWriteStream(output));
+	await document.end();
+
+	return [output];
+};
+
+const exportPdfPages = async (file: FileDetails, exportOptions: ExportOptions, imageFormat: string, token: string): Promise<string[]> => {
+	await getPageImageUrls(file, exportOptions.firstPageOnly, imageFormat, exportOptions.scale, token);
+	
+	const pagePromises = file.pages.map(page => exportPdfPage(file, page, exportOptions, imageFormat, token));
+	const result = await Promise.all(pagePromises);
+	return result.reduce((a, b) => a.concat(b), []);
+};
+
+const exportFormats = ['pdf', 'png', 'jpg', 'svg'];
 
 export const exportFile = async (key: string, options: ExportOptions, token: string): Promise<string[]> => {
-	const directory = options && options.directory || process.cwd();
 	const format = options && options.format || 'pdf';
-
-	const formatter = exportFormats[format];
-	if (!formatter) {
+	if (exportFormats.indexOf(format) === -1) {
 		throw new Error(`The requested format is invalid: ${format}`);
 	}
 
+	const exporter = format === 'pdf'
+		? exportPdfPages
+		: exportPages;
+
 	const details = await getFileDetails(key, token);
 	if (details.pages && details.pages.length > 0) {
-		return await formatter(details, directory, options && options.scale, token);
+		return await exporter(details, Object.assign({}, {
+			directory: cwd(),
+			firstPageOnly: true
+		}, options || {}), format, token);
 	}
 
 	return [];
