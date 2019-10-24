@@ -19,9 +19,9 @@ const cli = new Liftoff({
 	v8flags: require('v8flags')
 });
 
-const logOutputFile = (file: string) => {
+const logOutputFile = (files: string[]) => {
 	// tslint:disable-next-line:no-console
-	console.log(`Figma PDF exported to ${file}.`);
+	files.forEach(file => console.log(`Figma PDF exported to ${file}.`));
 };
 
 const getFormatOptions = argv => {
@@ -70,8 +70,7 @@ export function run() {
 				}
 			})
 			.command('project <id>', 'Export all files in a project', () => {}, async argv => {
-				const outputFiles = await exportProject(argv.id, getFormatOptions(argv), argv.token);
-				outputFiles.forEach(logOutputFile);
+				logOutputFile(await exportProject(argv.id, getFormatOptions(argv), argv.token));
 			})
 			.command(['file <key>', '*'], 'Export file', () => {}, async argv => {
 				logOutputFile(await exportFile(argv.key, getFormatOptions(argv), argv.token));

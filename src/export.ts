@@ -130,16 +130,20 @@ const createPdf = (file: FileDetails, res: any) => {
 	doc.end();
 };
 
-const exportPdf = async (file: FileDetails, output: string, scale: number, token: string) => {
+const exportPdf = async (file: FileDetails, outputDirectory: string, scale: number, token: string): Promise<string[]> => {
 	await exportPages(file, 'svg', scale, token);
 	await getExportSvgContents(file, token);
 
+	const output = path.join(outputDirectory, `${file.name}.pdf`);
 	const stream = fs.createWriteStream(output);
 	createPdf(file, stream);
+
+	return [output];
 };
 
-const exportPngPage = async (directory: string, name: string, pageNumber: number, imageUrl: string, token: string): Promise<void> => {
-	return new Promise<any>(resolve => {
+const exportPngPage = async (directory: string, name: string, pageNumber: number, imageUrl: string, token: string): Promise<string> => {
+	return new Promise<string>(resolve => {
+		const page = path.join(directory, `${name}-${pageNumber}.png`);
 		request({
 			uri: imageUrl,
 			method: 'GET',
@@ -148,28 +152,49 @@ const exportPngPage = async (directory: string, name: string, pageNumber: number
 				'X-Figma-Token': token
 			}
 		})
-		.pipe(fs.createWriteStream(path.join(directory, `${name}-${pageNumber}.png`)))
-		.on('close', resolve);
+		.pipe(fs.createWriteStream(page))
+		.on('close', () => resolve(page));
 	});
 };
 
-const exportPng = async (file: FileDetails, output: string, scale: number, token: string) => {
+const exportPng = async (file: FileDetails, output: string, scale: number, token: string): Promise<string[]> => {
 	await exportPages(file, 'png', scale, token);
 
 	const directory = path.dirname(output);
 	const baseName = path.basename(output, '.png');
 
 	const pagePromises = file.pages.map((page, index) => exportPngPage(directory, baseName, index + 1, page.imageUrl, token));
-	await Promise.all(pagePromises);
+	return await Promise.all(pagePromises);
+};
+
+const exportSvgPage = async (directory: string, name: string, pageNumber: number, content: string): Promise<string> => {
+	return new Promise<string>((resolve, reject) => {
+		const page = path.join(directory, `${name}-${pageNumber}.svg`);
+		fs.writeFile(page, content, err => {
+			if (err) {
+				reject(err);
+			} else {
+				resolve(page);
+			}
+		});
+	});
+};
+
+const exportSvg = async (file: FileDetails, outputDirectory: string, scale: number, token: string): Promise<string[]> => {
+	await exportPages(file, 'svg', scale, token);
+	await getExportSvgContents(file, token);
+
+	const pagePromises = file.pages.map((page, index) => exportSvgPage(outputDirectory, file.name, index + 1, page.svgContent));
+	return await Promise.all(pagePromises);
 };
 
 const exportFormats = {
 	'pdf': exportPdf,
 	'png': exportPng,
-	// 'svg': exportSvg
+	'svg': exportSvg
 };
 
-export const exportFile = async (key: string, options: ExportOptions, token: string): Promise<string> => {
+export const exportFile = async (key: string, options: ExportOptions, token: string): Promise<string[]> => {
 	const directory = options && options.directory || process.cwd();
 	const format = options && options.format || 'pdf';
 
@@ -179,19 +204,17 @@ export const exportFile = async (key: string, options: ExportOptions, token: str
 	}
 
 	const details = await getFileDetails(key, token);
-	const name = `${details.name}.${format}`;
-	const file = path.join(directory, name);
-
 	if (details.pages && details.pages.length > 0) {
-		await formatter(details, file, options && options.scale, token);
+		return await formatter(details, directory, options && options.scale, token);
 	}
 
-	return file;
+	return [];
 };
 
 export const exportProject = async (key: string, options: ExportOptions, token: string): Promise<string[]> => {
 	const files = await getProjectDetails(key, token);
 	const filePromises = files.map(file => exportFile(file.key, options, token));
 
-	return await Promise.all(filePromises);
+	const output = await Promise.all(filePromises);
+	return output.reduce((a, b) => a.concat(b), []);
 };
