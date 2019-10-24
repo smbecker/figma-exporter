@@ -72,7 +72,8 @@ const get = (url: string, token: string): Promise<any> => {
 				'Accept': 'application/json',
 				'X-Figma-Token': token
 			},
-			json: true
+			json: true,
+			timeout: 60000
 		}, (err, response, body) => {
 			if (!err && response.statusCode !== 200) {
 				err = new Error(`The request was not successful: ${url} [${response.statusCode}: ${JSON.stringify(body)}]`);
@@ -138,6 +139,7 @@ const exportLayerOutput = (imageUrl: string, token: string, callback: (body: Buf
 			headers: {
 				'X-Figma-Token': token
 			},
+			timeout: 120000,
 			encoding: null
 		}, (err, _, body) => {
 			if (err) {
