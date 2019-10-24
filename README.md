@@ -16,12 +16,12 @@ npm link
 ## Usage
 
 ```shell
-figma-exporter --help
+figma-export --help
 ```
 
 ### Configuring
 
-Any command line option that can be passed in to the CLI can also be picked up through environment variables (i.e. FIGMA_option=value) or through the presence of a `figma-exporter.json` file any where in the current directory hierarchy.
+Any command line option that can be passed in to the CLI can also be picked up through environment variables (i.e. FIGMA_option=value) or through the presence of a `figma-export.json` file any where in the current directory hierarchy.
 
 ```json
 {
